@@ -27,7 +27,7 @@ func main() {
 	backendServer := backend.NewBackendServer(cfg.BackendPort)
 
 	go func() {
-		err := backend.StartBackend(backendServer)
+		err := backend.StartBackend(backendServer, cfg.StreamedResponse)
 		if err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Backend failed: %v", err)
 		}

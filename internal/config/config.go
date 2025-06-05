@@ -6,9 +6,10 @@ import (
 )
 
 type Config struct {
-	BackendPort   string
-	SlackAppToken string
-	SlackBotToken string
+	BackendPort      string
+	SlackAppToken    string
+	SlackBotToken    string
+	StreamedResponse bool
 }
 
 func Load() (*Config, error) {
@@ -21,8 +22,9 @@ func Load() (*Config, error) {
 	}
 
 	return &Config{
-		BackendPort:   backendPort,
-		SlackAppToken: slackAppToken,
-		SlackBotToken: slackBotToken,
+		BackendPort:      backendPort,
+		SlackAppToken:    slackAppToken,
+		SlackBotToken:    slackBotToken,
+		StreamedResponse: true,
 	}, nil
 }
