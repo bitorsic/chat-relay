@@ -6,17 +6,23 @@ import (
 )
 
 type Config struct {
-	BackendPort string
+	BackendPort   string
+	SlackAppToken string
+	SlackBotToken string
 }
 
 func Load() (*Config, error) {
 	backendPort := os.Getenv("BACKEND_PORT")
+	slackAppToken := os.Getenv("SLACK_APP_TOKEN")
+	slackBotToken := os.Getenv("SLACK_BOT_TOKEN")
 
-	if backendPort == "" {
+	if backendPort == "" || slackAppToken == "" || slackBotToken == "" {
 		return nil, fmt.Errorf(".env not complete")
 	}
 
 	return &Config{
-		BackendPort: backendPort,
+		BackendPort:   backendPort,
+		SlackAppToken: slackAppToken,
+		SlackBotToken: slackBotToken,
 	}, nil
 }

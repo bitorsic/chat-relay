@@ -3,6 +3,7 @@ package main
 import (
 	"chat-relay/internal/backend"
 	"chat-relay/internal/config"
+	"chat-relay/internal/slack"
 	"log"
 	"net/http"
 	"os"
@@ -31,6 +32,8 @@ func main() {
 			log.Fatalf("Backend failed: %v", err)
 		}
 	}()
+
+	go slack.StartSlackBot(cfg.SlackAppToken, cfg.SlackBotToken)
 
 	// listening for SIGINT and performing graceful shutdown
 	sig := make(chan os.Signal, 1)
