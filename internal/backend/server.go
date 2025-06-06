@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -14,9 +15,14 @@ type ChatRequest struct {
 	Query  string `json:"query"`
 }
 
-func NewBackendServer(port string) *http.Server {
+func NewBackendServer() *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/chat/stream", handleChat)
+
+	port := os.Getenv("BACKEND_PORT")
+	if port == "" {
+		port = "3000"
+	}
 
 	server := &http.Server{
 		Addr:    ":" + port,
@@ -26,10 +32,7 @@ func NewBackendServer(port string) *http.Server {
 	return server
 }
 
-var streamed bool
-
-func StartBackend(server *http.Server, streamedResponse bool) error {
-	streamed = streamedResponse
+func StartBackend(server *http.Server) error {
 	log.Println("Listening on port", server.Addr)
 
 	return server.ListenAndServe()
@@ -39,6 +42,14 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
+	}
+
+	var streamed bool
+	streamedString := os.Getenv("STREAMED_RESPONSE")
+	if streamedString == "true" {
+		streamed = true
+	} else {
+		streamed = false
 	}
 
 	var req ChatRequest
@@ -68,10 +79,12 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		for i, chunk := range chunks {
 			fmt.Fprintf(w, "id: %d\nevent: message_part\ndata: {\"text_chunk\": \"%s\"}\n\n", i+1, chunk)
 			flusher.Flush()
+			// time.Sleep(2 * time.Second)
 		}
 
 		fmt.Fprintf(w, "id: %d\nevent: stream_end\ndata: {\"status\": \"done\"}\n\n", len(chunks)+1)
 		flusher.Flush()
+		// time.Sleep(2 * time.Second)
 
 		return
 	}

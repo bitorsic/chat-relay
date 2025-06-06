@@ -1,8 +1,12 @@
 package slack
 
 import (
-	"fmt"
+	"bufio"
+	"bytes"
+	"encoding/json"
 	"log"
+	"net/http"
+	"os"
 	"strings"
 
 	"github.com/slack-go/slack"
@@ -10,11 +14,13 @@ import (
 	"github.com/slack-go/slack/socketmode"
 )
 
-func StartSlackBot(appToken string, botToken string) {
+func StartSlackBot() {
+	appToken := os.Getenv("SLACK_APP_TOKEN")
 	if !strings.HasPrefix(appToken, "xapp-") {
 		log.Fatalln("SLACK_APP_TOKEN must have the prefix \"xapp-\".")
 	}
 
+	botToken := os.Getenv("SLACK_BOT_TOKEN")
 	if !strings.HasPrefix(botToken, "xoxb-") {
 		log.Fatalln("SLACK_BOT_TOKEN must have the prefix \"xoxb-\".")
 	}
@@ -58,7 +64,7 @@ func StartSlackBot(appToken string, botToken string) {
 						go handleSlackResponse(ev.Channel, ev.User, ev.Text, client)
 					case *slackevents.MessageEvent:
 						// ignore message that is not a DM (just for future safety), and message sent by bot itself
-						if ev.ChannelType != "im" || ev.BotID != "" {
+						if ev.ChannelType != "im" || ev.BotID != "" || ev.User == "" {
 							continue
 						}
 
@@ -66,10 +72,10 @@ func StartSlackBot(appToken string, botToken string) {
 						go handleSlackResponse(ev.Channel, ev.User, ev.Text, client)
 					}
 				default:
-					client.Debugf("unsupported Events API event received")
+					log.Println("unsupported Events API event received")
 				}
 			case socketmode.EventTypeHello:
-				client.Debugf("Hello received!")
+				log.Println("Received hello from slack. Good to go now")
 			default:
 				log.Printf("Unexpected event type received: %s\n", evt.Type)
 			}
@@ -80,10 +86,95 @@ func StartSlackBot(appToken string, botToken string) {
 }
 
 func handleSlackResponse(channel string, user string, text string, client *socketmode.Client) {
-	fmt.Printf("Channel: %v\nUser: %v\nText: %v\n", channel, user, text)
-
-	_, _, err := client.PostMessage(channel, slack.MsgOptionText("Well hello there fellow user", false))
-	if err != nil {
-		log.Printf("Failed to post message: %v", err)
+	payload := map[string]string{
+		"user_id": user,
+		"query":   text,
 	}
+
+	body, _ := json.Marshal(payload)
+	req, _ := http.NewRequest("POST", os.Getenv("BACKEND_URL")+"v1/chat/stream", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		_, _, err := client.PostMessage(channel, slack.MsgOptionText("Could not connect to the backend. Please try again.", false))
+		if err != nil {
+			log.Printf("Failed to post message: %v", err)
+		}
+	}
+	defer response.Body.Close()
+
+	contentType := response.Header.Get("Content-Type")
+
+	// checking for prefix because header might include charset, etc.
+	if strings.HasPrefix(contentType, "text/event-stream") {
+		msgText := "..."
+
+		_, timestamp, err := client.PostMessage(channel, slack.MsgOptionText(msgText, false))
+		if err != nil {
+			log.Printf("Failed to post message: %v", err)
+			return
+		}
+
+		scanner := bufio.NewScanner(response.Body)
+		for scanner.Scan() {
+			line := scanner.Text()
+
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+
+			dataPart := strings.TrimPrefix(line, "data: ")
+
+			var chunk map[string]string
+			err := json.Unmarshal([]byte(dataPart), &chunk)
+			if err != nil {
+				log.Printf("could not parse json: %v", dataPart)
+				return
+			}
+
+			textChunk, ok := chunk["text_chunk"]
+			if !ok {
+				status, ok := chunk["status"]
+				if !ok {
+					continue
+				}
+
+				if status == "done" {
+					msgText = strings.TrimSuffix(msgText, "...")
+
+					_, _, _, err = client.UpdateMessage(channel, timestamp, slack.MsgOptionText(msgText, false))
+					if err != nil {
+						log.Printf("Failed to update message: %v", err)
+					}
+					return
+				}
+			}
+
+			// formatting message text
+			msgText = strings.TrimSuffix(msgText, "...")
+			msgText += textChunk + "..."
+
+			_, _, _, err = client.UpdateMessage(channel, timestamp, slack.MsgOptionText(msgText, false))
+			if err != nil {
+				log.Printf("Failed to update message: %v", err)
+			}
+		}
+	} else if strings.HasPrefix(contentType, "application/json") {
+		var data map[string]string
+
+		err := json.NewDecoder(response.Body).Decode(&data)
+		if err != nil {
+			log.Println("received invalid json response")
+			return
+		}
+
+		text := data["full_response"]
+
+		_, _, err = client.PostMessage(channel, slack.MsgOptionText(text, false))
+		if err != nil {
+			log.Printf("Failed to post message: %v", err)
+		}
+	}
+
 }
