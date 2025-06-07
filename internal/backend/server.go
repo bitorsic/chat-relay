@@ -13,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type ChatRequest struct {
@@ -101,15 +102,31 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		var chunkID int
+
 		for i, chunk := range chunks {
-			fmt.Fprintf(w, "id: %d\nevent: message_part\ndata: {\"text_chunk\": \"%s\"}\n\n", i+1, chunk)
+			chunkID = i + 1
+			fmt.Fprintf(w, "id: %d\nevent: message_part\ndata: {\"text_chunk\": \"%s\"}\n\n", chunkID, chunk)
 			flusher.Flush()
 			// time.Sleep(2 * time.Second)
+
+			span.AddEvent("SentTextChunk", trace.WithAttributes(
+				attribute.Int("chunk_id", chunkID),
+				attribute.String("event", "message_part"),
+			))
 		}
 
-		fmt.Fprintf(w, "id: %d\nevent: stream_end\ndata: {\"status\": \"done\"}\n\n", len(chunks)+1)
+		chunkID = len(chunks) + 1
+
+		fmt.Fprintf(w, "id: %d\nevent: stream_end\ndata: {\"status\": \"done\"}\n\n", chunkID)
 		flusher.Flush()
 		// time.Sleep(2 * time.Second)
+
+		span.AddEvent("SentStatusChunk", trace.WithAttributes(
+			attribute.Int("chunk_id", chunkID),
+			attribute.String("event", "stream_end"),
+			attribute.String("status", "done"),
+		))
 
 		return
 	}
@@ -120,6 +137,8 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+
+	span.AddEvent("SentFullJSONResponse")
 }
 
 func StopBackend(server *http.Server, timeout time.Duration) error {

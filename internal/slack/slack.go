@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func StartSlackBot() {
@@ -135,6 +136,7 @@ func handleSlackResponse(ctx context.Context, channel string, user string, text 
 	propagator.Inject(ctx, propagation.HeaderCarrier(req.Header))
 
 	response, err := http.DefaultClient.Do(req)
+	span.SetAttributes(attribute.Int("http_status_code", response.StatusCode))
 	if err != nil {
 		span.SetStatus(codes.Error, "Could not connect to the backend")
 		span.RecordError(err)
@@ -144,14 +146,18 @@ func handleSlackResponse(ctx context.Context, channel string, user string, text 
 		if err != nil {
 			log.Printf("Failed to post message: %v", err)
 		}
+		return
 	}
 	defer response.Body.Close()
 
 	span.End()
 
 	ctx, span = tracer.Start(ctx, "ProcessBackendResponse")
+	defer span.End()
 
 	contentType := response.Header.Get("Content-Type")
+
+	span.SetAttributes(attribute.String("content_type", contentType))
 
 	// checking for prefix because header might include charset, etc.
 	if strings.HasPrefix(contentType, "text/event-stream") {
@@ -159,6 +165,9 @@ func handleSlackResponse(ctx context.Context, channel string, user string, text 
 
 		_, timestamp, err := client.PostMessage(channel, slack.MsgOptionText(msgText, false))
 		if err != nil {
+			span.SetStatus(codes.Error, "Could not post message to slack")
+			span.RecordError(err)
+
 			log.Printf("Failed to post message: %v", err)
 			return
 		}
@@ -187,16 +196,25 @@ func handleSlackResponse(ctx context.Context, channel string, user string, text 
 					continue
 				}
 
+				span.AddEvent("ReceivedStatus", trace.WithAttributes(
+					attribute.String("status", status),
+				))
+
 				if status == "done" {
 					msgText = strings.TrimSuffix(msgText, "...")
 
 					_, _, _, err = client.UpdateMessage(channel, timestamp, slack.MsgOptionText(msgText, false))
 					if err != nil {
+						span.SetStatus(codes.Error, "Could not update slack message")
+						span.RecordError(err)
+
 						log.Printf("Failed to update message: %v", err)
 					}
 					return
 				}
 			}
+
+			span.AddEvent("ReceivedTextChunk")
 
 			// formatting message text
 			msgText = strings.TrimSuffix(msgText, "...")
@@ -204,6 +222,9 @@ func handleSlackResponse(ctx context.Context, channel string, user string, text 
 
 			_, _, _, err = client.UpdateMessage(channel, timestamp, slack.MsgOptionText(msgText, false))
 			if err != nil {
+				span.SetStatus(codes.Error, "Could not update slack message")
+				span.RecordError(err)
+
 				log.Printf("Failed to update message: %v", err)
 			}
 		}
@@ -212,6 +233,9 @@ func handleSlackResponse(ctx context.Context, channel string, user string, text 
 
 		err := json.NewDecoder(response.Body).Decode(&data)
 		if err != nil {
+			span.SetStatus(codes.Error, "Could not parse JSON response")
+			span.RecordError(err)
+
 			log.Println("received invalid json response")
 			return
 		}
@@ -220,8 +244,13 @@ func handleSlackResponse(ctx context.Context, channel string, user string, text 
 
 		_, _, err = client.PostMessage(channel, slack.MsgOptionText(text, false))
 		if err != nil {
+			span.SetStatus(codes.Error, "Could not post message to slack")
+			span.RecordError(err)
+
 			log.Printf("Failed to post message: %v", err)
 		}
+
+		span.AddEvent("ReceivedFullJSONResponse")
 	}
 
 }
