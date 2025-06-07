@@ -2,7 +2,9 @@ package main
 
 import (
 	"chat-relay/internal/backend"
+	"chat-relay/internal/otel"
 	"chat-relay/internal/slack"
+	"context"
 	"log"
 	"net/http"
 	"os"
@@ -20,6 +22,13 @@ func init() {
 func main() {
 	backendServer := backend.NewBackendServer()
 
+	// initializing otel
+	ctx := context.Background()
+	shutdown, err := otel.InitTracer("chat-relay")
+	if err != nil {
+		log.Fatalf("OpenTelemetry init failed: %v", err)
+	}
+
 	go func() {
 		err := backend.StartBackend(backendServer)
 		if err != nil && err != http.ErrServerClosed {
@@ -34,10 +43,14 @@ func main() {
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	<-sig
 
-	err := backend.StopBackend(backendServer, 5*time.Second)
+	err = backend.StopBackend(backendServer, 5*time.Second)
 	if err != nil {
 		log.Printf("Backend shutdown failed: %v", err)
 	}
+
+	// shutting down otel
+	log.Printf("[!] Stopping OpenTelemetry...")
+	shutdown(ctx)
 
 	log.Println("Graceful Shutdown Successful")
 }

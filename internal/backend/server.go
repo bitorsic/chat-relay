@@ -8,6 +8,11 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 type ChatRequest struct {
@@ -39,7 +44,18 @@ func StartBackend(server *http.Server) error {
 }
 
 func handleChat(w http.ResponseWriter, r *http.Request) {
+	// extracting the context from headers for otel tracing
+	propagator := propagation.TraceContext{}
+	ctx := propagator.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+
+	// starting the tracer and the new span
+	tracer := otel.Tracer("mock-backend")
+	ctx, span := tracer.Start(ctx, "ProcessingChatRequest")
+	defer span.End()
+
 	if r.Method != http.MethodPost {
+		span.SetStatus(codes.Error, "Could not connect to the backend")
+
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -52,10 +68,15 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		streamed = false
 	}
 
+	span.SetAttributes(attribute.Bool("streamed", streamed))
+
 	var req ChatRequest
 
 	err := json.NewDecoder(r.Body).Decode(&req)
 	if err != nil {
+		span.SetStatus(codes.Error, "Invalid HTTP request")
+		span.RecordError(err)
+
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
@@ -67,11 +88,15 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 			"Channels help them communicate safely",
 		}
 
+		span.SetAttributes(attribute.Int("chunks_count", len(chunks)))
+
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 
 		flusher, ok := w.(http.Flusher)
 		if !ok {
+			span.SetStatus(codes.Error, "Streaming not supported")
+
 			http.Error(w, "streaming not supported", http.StatusInternalServerError)
 			return
 		}

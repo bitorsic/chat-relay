@@ -3,6 +3,7 @@ package slack
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -12,6 +13,10 @@ import (
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 	"github.com/slack-go/slack/socketmode"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 func StartSlackBot() {
@@ -44,7 +49,7 @@ func StartSlackBot() {
 			case socketmode.EventTypeConnectionError:
 				log.Println("Connection failed. Retrying later...")
 			case socketmode.EventTypeConnected:
-				log.Println("Connected to Slack with Socket Mode.")
+				log.Println("Connected to Slack with Socket Mode")
 			case socketmode.EventTypeEventsAPI:
 				eventsAPIEvent, ok := evt.Data.(slackevents.EventsAPIEvent)
 				if !ok {
@@ -60,16 +65,30 @@ func StartSlackBot() {
 					innerEvent := eventsAPIEvent.InnerEvent
 					switch ev := innerEvent.Data.(type) {
 					case *slackevents.AppMentionEvent:
+						tracer := otel.Tracer("slack-bot")
+						ctx, span := tracer.Start(context.Background(), "ReceivedSlackMessage")
+						span.SetAttributes(
+							attribute.String("event", "mention"),
+						)
+						span.End()
+
 						log.Printf("Bot was mentioned in channel %v by user %v: %v", ev.Channel, ev.User, ev.Text)
-						go handleSlackResponse(ev.Channel, ev.User, ev.Text, client)
+						go handleSlackResponse(ctx, ev.Channel, ev.User, ev.Text, client)
 					case *slackevents.MessageEvent:
 						// ignore message that is not a DM (just for future safety), and message sent by bot itself
 						if ev.ChannelType != "im" || ev.BotID != "" || ev.User == "" {
 							continue
 						}
 
+						tracer := otel.Tracer("slack-bot")
+						ctx, span := tracer.Start(context.Background(), "ReceivedSlackMessage")
+						span.SetAttributes(
+							attribute.String("event", "dm"),
+						)
+						span.End()
+
 						log.Printf("Bot was DM'd (channel %v) by user %v: %v", ev.Channel, ev.User, ev.Text)
-						go handleSlackResponse(ev.Channel, ev.User, ev.Text, client)
+						go handleSlackResponse(ctx, ev.Channel, ev.User, ev.Text, client)
 					}
 				default:
 					log.Println("unsupported Events API event received")
@@ -85,24 +104,52 @@ func StartSlackBot() {
 	client.Run()
 }
 
-func handleSlackResponse(channel string, user string, text string, client *socketmode.Client) {
+func handleSlackResponse(ctx context.Context, channel string, user string, text string, client *socketmode.Client) {
+	tracer := otel.Tracer("slack-bot")
+	ctx, span := tracer.Start(ctx, "SendingPayload")
+
+	httpMethod := "POST"
+	endpoint := os.Getenv("BACKEND_URL") + "v1/chat/stream"
+
 	payload := map[string]string{
 		"user_id": user,
 		"query":   text,
 	}
 
 	body, _ := json.Marshal(payload)
-	req, _ := http.NewRequest("POST", os.Getenv("BACKEND_URL")+"v1/chat/stream", bytes.NewReader(body))
+
+	span.SetAttributes(
+		attribute.String("user_id", user),
+		attribute.String("query", text),
+		attribute.String("http_method", httpMethod),
+		attribute.String("endpoint", endpoint),
+	)
+
+	// for propagating the trace to the backend as well
+	propagator := propagation.TraceContext{}
+
+	req, _ := http.NewRequestWithContext(ctx, httpMethod, endpoint, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+
+	// injecting ctx into http header
+	propagator.Inject(ctx, propagation.HeaderCarrier(req.Header))
 
 	response, err := http.DefaultClient.Do(req)
 	if err != nil {
+		span.SetStatus(codes.Error, "Could not connect to the backend")
+		span.RecordError(err)
+		span.End()
+
 		_, _, err := client.PostMessage(channel, slack.MsgOptionText("Could not connect to the backend. Please try again.", false))
 		if err != nil {
 			log.Printf("Failed to post message: %v", err)
 		}
 	}
 	defer response.Body.Close()
+
+	span.End()
+
+	ctx, span = tracer.Start(ctx, "ProcessBackendResponse")
 
 	contentType := response.Header.Get("Content-Type")
 
