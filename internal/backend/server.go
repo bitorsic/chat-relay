@@ -83,13 +83,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if streamed {
-		chunks := []string{
-			"Goroutines are lightweight threads. ",
-			"They enable high concurrency in Go. ",
-			"Channels help them communicate safely",
-		}
-
-		span.SetAttributes(attribute.Int("chunks_count", len(chunks)))
+		aiStream := getGenAIStream(ctx, req.Query)
 
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
@@ -102,11 +96,37 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		var chunkID int
+		var chunkID int = 0
 
-		for i, chunk := range chunks {
-			chunkID = i + 1
-			fmt.Fprintf(w, "id: %d\nevent: message_part\ndata: {\"text_chunk\": \"%s\"}\n\n", chunkID, chunk)
+		// for i, chunk := range chunks {
+		for chunk, err := range aiStream {
+			if err != nil {
+				span.SetStatus(codes.Error, "Could not generate AI Response")
+				span.RecordError(err)
+
+				http.Error(w, "could not generate response properly", http.StatusInternalServerError)
+				return
+			}
+			chunkID++
+
+			part := chunk.Candidates[0].Content.Parts[0]
+			textChunk := part.Text
+
+			// constructing JSON this way to avoid parsing errors
+			payload := map[string]string{
+				"text_chunk": textChunk,
+			}
+
+			jsonBytes, err := json.Marshal(payload)
+			if err != nil {
+				span.SetStatus(codes.Error, "Could not construct JSON properly")
+				span.RecordError(err)
+
+				http.Error(w, "could not construct json properly", http.StatusInternalServerError)
+				return
+			}
+
+			fmt.Fprintf(w, "id: %d\nevent: message_part\ndata: %s\n\n", chunkID, string(jsonBytes))
 			flusher.Flush()
 			// time.Sleep(2 * time.Second)
 
@@ -116,7 +136,9 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 			))
 		}
 
-		chunkID = len(chunks) + 1
+		span.SetAttributes(attribute.Int("chunks_count", chunkID))
+
+		chunkID++
 
 		fmt.Fprintf(w, "id: %d\nevent: stream_end\ndata: {\"status\": \"done\"}\n\n", chunkID)
 		flusher.Flush()
@@ -131,8 +153,17 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	aiResponse, err := getGenAIFullResponse(ctx, req.Query)
+	if err != nil {
+		span.SetStatus(codes.Error, "Could not generate AI Response")
+		span.RecordError(err)
+
+		http.Error(w, "could not generate response properly", http.StatusInternalServerError)
+		return
+	}
+
 	response := map[string]string{
-		"full_response": "Goroutines are lightweight threads. They enable high concurrency in Go. Channels help them communicate safely",
+		"full_response": aiResponse,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

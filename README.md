@@ -1,13 +1,20 @@
-
 # ChatRelay Slack Bot
 
-ChatRelay is a high-performance Golang Slack bot that listens to user messages (via direct messages or mentions), forwards them to a backend, and streams the response back to Slack. It includes strong observability via OpenTelemetry, is built with concurrency in mind, and is easily extensible.
+ChatRelay is a high-performance Golang Slack bot powered by Google Gemini AI. It listens to user messages (via direct messages or mentions), forwards them to a Gemini-backed backend, and streams or posts the AI-generated response back to Slack. The project emphasizes observability with OpenTelemetry, concurrency with goroutines, and production readiness through clean architecture and Dockerization.
 
 ----------
 
 ## 📅 Project Overview
 
 -   **Slack Bot:** Responds to @mentions and DMs.
+    
+-   **Chat Backend:** Uses Gemini AI (via gemini-1.5-flash) to generate responses.
+    
+-   **Streaming Support:** Supports both SSE-style streaming and complete responses.
+    
+-   **Observability:** Full lifecycle traced with OpenTelemetry.
+    
+-   **Concurrency:** Utilizes goroutines for event handling, backend calls, and message updates.
     
 -   **Chat Backend:** Simulated server with SSE or complete JSON response.
     
@@ -57,15 +64,16 @@ ChatRelay is a high-performance Golang Slack bot that listens to user messages (
 ## 📁 Project Structure
 
 ```
-cmd/main.go                  # Entry point, starts backend and Slack bot
-defer graceful shutdown
-internal/backend/server.go   # Mock backend server with SSE/JSON response
-internal/backend/server_test.go # Basic unit test
-otel/otel.go                 # OpenTelemetry setup
-slack/slack.go               # Slack bot logic and response handler
-.env.example                 # Example environment variables
-go.mod / go.sum              # Dependencies
-Dockerfile                   # Container config
+cmd/main.go                         # Entry point, sets up Gemini, backend, tracing, Slack bot
+internal/backend/server.go          # HTTP handler for /v1/chat/stream, uses Gemini for responses
+internal/backend/genai.go           # Gemini streaming and full-response helpers
+internal/backend/server_test.go     # Unit tests for backend (SSE and JSON)
+internal/config/genai.go            # Gemini SDK client and config setup
+internal/slack/slack.go             # Slack bot logic, event handling, message streaming
+otel/otel.go                        # OpenTelemetry tracer initialization
+.env.example                        # Example environment variables
+Dockerfile                          # Container config for building the service
+go.mod / go.sum                     # Dependencies
 ```
 
 ----------
@@ -88,6 +96,7 @@ SLACK_BOT_TOKEN=xoxb-...
 BACKEND_PORT=3000
 BACKEND_URL=http://localhost:3000/
 STREAMED_RESPONSE=true  # or false
+GEMINI_API_KEY=your-gemini-api-key
 # Optional for OTEL exporter (if used):
 # OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
 ```
@@ -147,7 +156,7 @@ go run cmd/main.go
     
 -   Behavior:
     
-    -   If `STREAMED_RESPONSE=true`, replies with **SSE stream**:
+    -   If `STREAMED_RESPONSE=true`, replies with **SSE stream**, generated using **Gemini AI (gemini-1.5-flash)**:
         
         ```
         id: 1
@@ -163,7 +172,7 @@ go run cmd/main.go
         data: {"status": "done"}
         ```
         
-    -   Else, replies with full JSON:
+    -   Else, replies with full JSON response using Gemini AI:
         
         ```
         {
@@ -344,4 +353,4 @@ go test -cover ./...
 
 ----------
 
-Built with Go, Slack API, and OpenTelemetry ❤️
+Built with Go, Slack API, Gemini AI API, and OpenTelemetry ❤️

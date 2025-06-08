@@ -2,6 +2,7 @@ package main
 
 import (
 	"chat-relay/internal/backend"
+	"chat-relay/internal/config"
 	"chat-relay/internal/otel"
 	"chat-relay/internal/slack"
 	"context"
@@ -22,12 +23,16 @@ func init() {
 func main() {
 	backendServer := backend.NewBackendServer()
 
-	// initializing otel
 	ctx := context.Background()
+
+	// initializing otel
 	shutdown, err := otel.InitTracer("chat-relay")
 	if err != nil {
 		log.Fatalf("OpenTelemetry init failed: %v", err)
 	}
+
+	// initializing genai sdk
+	config.GenAISetup(ctx)
 
 	go func() {
 		err := backend.StartBackend(backendServer)

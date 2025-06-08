@@ -185,6 +185,9 @@ func handleSlackResponse(ctx context.Context, channel string, user string, text 
 			var chunk map[string]string
 			err := json.Unmarshal([]byte(dataPart), &chunk)
 			if err != nil {
+				span.SetStatus(codes.Error, "Could not parse JSON")
+				span.RecordError(err)
+
 				log.Printf("could not parse json: %v", dataPart)
 				return
 			}
