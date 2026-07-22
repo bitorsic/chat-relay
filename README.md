@@ -1,356 +1,183 @@
 # ChatRelay Slack Bot
 
-ChatRelay is a high-performance Golang Slack bot powered by Google Gemini AI. It listens to user messages (via direct messages or mentions), forwards them to a Gemini-backed backend, and streams or posts the AI-generated response back to Slack. The project emphasizes observability with OpenTelemetry, concurrency with goroutines, and production readiness through clean architecture and Dockerization.
+ChatRelay is a Go Slack bot that listens for direct messages and @mentions, forwards them to a Gemini-backed backend, and returns either a streamed SSE response or a full JSON response back to Slack. The backend, Slack client, and tracing are all started by the same Go process.
 
-----------
+## What It Does
 
-## 📅 Project Overview
+- Responds to Slack `app_mention` events in channels and `message.im` events in DMs.
+- Calls a local HTTP backend at `POST /v1/chat/stream`.
+- Uses Google Gemini (`gemini-1.5-flash`) for both streamed and non-streamed responses.
+- Updates the Slack message while streamed chunks arrive, or posts the full response directly.
+- Emits OpenTelemetry traces to stdout with pretty printing.
 
--   **Slack Bot:** Responds to @mentions and DMs.
-    
--   **Chat Backend:** Uses Gemini AI (via gemini-1.5-flash) to generate responses.
-    
--   **Streaming Support:** Supports both SSE-style streaming and complete responses.
-    
--   **Observability:** Full lifecycle traced with OpenTelemetry.
-    
--   **Concurrency:** Utilizes goroutines for event handling, backend calls, and message updates.
-    
--   **Chat Backend:** Simulated server with SSE or complete JSON response.
-    
--   **Observability:** Full lifecycle traced with OpenTelemetry.
-    
--   **Concurrency:** Goroutines used to handle Slack events, backend communication, and streaming.
-    
+## Runtime Layout
 
-----------
+The application starts two things:
 
-## ⚖️ Design Decisions
+- A Slack Socket Mode client for event handling.
+- An HTTP backend server that listens on `BACKEND_PORT` and serves `/v1/chat/stream`.
 
-### Slack Connection: Socket Mode
+The Slack side sends the user message to the backend with JSON like:
 
--   **Why:** Enables local development without exposing public URLs.
-    
--   **How:** Uses `slack-go/slack` and `socketmode`.
-    
-
-### Backend Streaming
-
--   SSE-based simulated streaming using `text/event-stream`.
-    
--   Alternatively, responds with a full JSON payload.
-    
-
-### Concurrency
-
--   Slack bot runs in its own goroutine.
-    
--   Backend server runs concurrently.
-    
--   Response processing is asynchronous using goroutines and channels.
-    
-
-### Observability (OpenTelemetry)
-
--   Context propagated across HTTP boundary.
-    
--   Spans: Receiving Slack event, sending to backend, processing response.
-    
--   Exporter: Console-based `stdouttrace`.
-    
-
-----------
-
-## 📁 Project Structure
-
-```
-cmd/main.go                         # Entry point, sets up Gemini, backend, tracing, Slack bot
-internal/backend/server.go          # HTTP handler for /v1/chat/stream, uses Gemini for responses
-internal/backend/genai.go           # Gemini streaming and full-response helpers
-internal/backend/server_test.go     # Unit tests for backend (SSE and JSON)
-internal/config/genai.go            # Gemini SDK client and config setup
-internal/slack/slack.go             # Slack bot logic, event handling, message streaming
-otel/otel.go                        # OpenTelemetry tracer initialization
-.env.example                        # Example environment variables
-Dockerfile                          # Container config for building the service
-go.mod / go.sum                     # Dependencies
+```json
+{
+  "user_id": "U12345",
+  "query": "Tell me about goroutines"
+}
 ```
 
-----------
+The backend returns:
 
-## 🌐 Setup and Running Instructions
+- `text/event-stream` when `STREAMED_RESPONSE=true`
+- `application/json` when `STREAMED_RESPONSE` is anything else or unset
 
-### 1. Clone and Configure Environment
+## Project Structure
 
+```text
+cmd/main.go                     # Entry point: starts tracing, Gemini, backend, and Slack bot
+internal/backend/server.go      # HTTP handler for /v1/chat/stream
+internal/backend/genai.go       # Gemini helpers for stream and full response modes
+internal/backend/server_test.go # Backend tests for streamed and JSON responses
+internal/config/genai.go        # Gemini client and generation config setup
+internal/slack/slack.go         # Slack Socket Mode client and response handling
+internal/slack/slack_test.go    # Slack handler test
+internal/otel/otel.go           # stdout OpenTelemetry tracer setup
+Dockerfile                      # Container image build
+docker-compose.yml              # Local compose setup
+go.mod                          # Go module definition
 ```
-git clone <your-repo-url>
-cd chat-relay
-cp .env.example .env
-```
 
-### 2. Environment Variables
+## Requirements
 
-```
+- Go 1.24 or newer
+- A Google Gemini API key
+- A Slack app configured for Socket Mode
+- Docker, if you want to run the container image
+
+## Configuration
+
+Create a `.env` file in the repository root with the following values:
+
+```bash
 SLACK_APP_TOKEN=xapp-...
 SLACK_BOT_TOKEN=xoxb-...
+GEMINI_API_KEY=your-gemini-api-key
 BACKEND_PORT=3000
 BACKEND_URL=http://localhost:3000/
-STREAMED_RESPONSE=true  # or false
-GEMINI_API_KEY=your-gemini-api-key
-# Optional for OTEL exporter (if used):
-# OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+STREAMED_RESPONSE=true
 ```
 
-### 3. Slack App Setup ([https://api.slack.com/apps](https://api.slack.com/apps))
+Notes:
 
--   **Event Subscriptions:**
-    
-    -   Enable events and set `Socket Mode` ON
-        
-    -   Subscribe to events: `app_mention`, `message.im`
-        
--   **Scopes Required:**
-    
-    -   `app_mentions:read`
-        
-    -   `chat:write`
-        
-    -   `channels:history`
-        
-    -   `groups:history`
-        
-    -   `im:history`
-        
--   **Tokens:**
-    
-    -   Generate **Bot Token (xoxb)** and **App-Level Token (xapp)**
-        
+- `BACKEND_URL` should end with a trailing slash because the code appends `v1/chat/stream` directly.
+- `BACKEND_PORT` defaults to `3000` if it is not set.
+- `STREAMED_RESPONSE` defaults to JSON mode unless it is exactly `true`.
 
-### 4. Run the Bot
+## Slack App Setup
 
+1. Create or open your app at [Slack API](https://api.slack.com/apps).
+2. Enable Socket Mode.
+3. Enable Event Subscriptions.
+4. Subscribe to `app_mention` and `message.im`.
+5. Add these bot token scopes:
+   - `app_mentions:read`
+   - `chat:write`
+   - `im:history`
+   - `channels:history` if you want channel mentions
+   - `groups:history` if you want private channel mentions
+6. Generate both tokens:
+   - Bot token: `xoxb-...`
+   - App-level token: `xapp-...`
+
+## Run Locally
+
+1. Clone the repository.
+2. Create your `.env` file with the values above.
+3. Start the app:
+
+```bash
+go run ./cmd
 ```
-go run cmd/main.go
+
+4. Send a DM to the bot or mention it in a channel.
+
+Example prompts:
+
+- `@ChatRelay tell me about goroutines`
+- `What is Go concurrency?`
+
+## Backend Behavior
+
+The backend exposes a single endpoint:
+
+- `POST /v1/chat/stream`
+
+When `STREAMED_RESPONSE=true`, the response is SSE with events in this shape:
+
+```text
+id: 1
+event: message_part
+data: {"text_chunk":"..."}
+
+id: 2
+event: stream_end
+data: {"status":"done"}
 ```
 
-### 5. Interacting With the Bot
+When streaming is disabled, the backend returns:
 
--   **Mention in channel:**  `@ChatRelay tell me about goroutines`
-    
--   **Direct message:**  `What is Go concurrency?`
-    
-
-----------
-
-## 🔁 Mock Backend Behavior
-
--   Endpoint: `POST /v1/chat/stream`
-    
--   Request format:
-    
-    ```
-    {
-      "user_id": "U12345",
-      "query": "Tell me about goroutines"
-    }
-    ```
-    
--   Behavior:
-    
-    -   If `STREAMED_RESPONSE=true`, replies with **SSE stream**, generated using **Gemini AI (gemini-1.5-flash)**:
-        
-        ```
-        id: 1
-        event: message_part
-        data: {"text_chunk": "concurrent execution units in Go. "}
-        
-        id: 2
-        event: message_part
-        data: {"text_chunk": "They allow for massive parallelism."}
-        
-        id: 3
-        event: stream_end
-        data: {"status": "done"}
-        ```
-        
-    -   Else, replies with full JSON response using Gemini AI:
-        
-        ```
-        {
-          "full_response": "Goroutines are lightweight..."
-        }
-        ```
-        
-
-----------
-
-## 🐳 Dockerization
-
-### 1. Build and Run Locally
-
+```json
+{
+  "full_response": "..."
+}
 ```
+
+## Docker
+
+Build the image:
+
+```bash
 docker build -t chatrelay .
-
-docker run --env-file .env -p 8080:8080 chatrelay
 ```
 
-### 2. **Docker Compose**
+Run the container on the backend port used by the app:
 
+```bash
+docker run --env-file .env -p 3000:3000 chatrelay
 ```
+
+Use Compose for local development:
+
+```bash
 docker-compose up --build
 ```
 
-----------
+If you change `BACKEND_PORT`, update the port mapping to match.
 
-## ⚖️ Observability: Tracing & Logging
+## Observability
 
-### Console Export (dev mode)
+- Traces are exported to stdout with `stdouttrace.WithPrettyPrint()`.
+- Slack events, backend requests, and response handling are traced.
+- The Slack client injects trace context into the backend request headers.
+- Shutdown is handled on `SIGINT` and `SIGTERM`.
 
--   Traces printed using `stdouttrace.WithPrettyPrint()`.
-    
--   Span context includes:
-    
-    -   Event type (mention/dm)
-        
-    -   Backend request/response lifecycle
-        
-    -   Response format (SSE or JSON)
-        
+## Testing
 
-### Context Propagation
+Run the test suite with:
 
--   Injects OTEL trace context in headers to backend.
-    
--   Trace IDs logged with `log.Printf` for correlation.
-    
-
-### Export to Collector (optional)
-
-To export telemetry data to Jaeger, OTLP, or a collector:
-
-```
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
-```
-
-Then update `otel/otel.go` to use OTLP exporter.
-
-----------
-
-## 🚀 Scalability, Performance, and Observability
-
-### Concurrency
-
--   Goroutines handle Slack events and backend streaming.
-    
--   Non-blocking Slack updates via message edits.
-    
-
-### Resource Management
-
--   Lightweight HTTP server and Slack client.
-    
--   Lazy response buffering.
-    
-
-### Bottlenecks & Mitigations
-
-Bottleneck
-
-Solution
-
-Slack API Rate Limits
-
-Message updates instead of floods
-
-Backend Latency
-
-Async SSE chunking with flushing
-
-Crash Resilience
-
-Graceful shutdown, error handling
-
-### Horizontal Scalability
-
--   Stateless design: Multiple bot instances can be run in parallel.
-    
--   Load balancer or Slack events can be distributed per bot instance.
-    
-
-### Stability
-
--   `signal.Notify` handles SIGTERM/SIGINT
-    
--   OpenTelemetry spans flushed on shutdown
-    
-
-----------
-
-## 📊 Testing
-
-### Unit Tests
-
-```
+```bash
 go test ./...
 ```
 
--   `server_test.go` includes:
-    
-    -   Test for SSE response
-        
-    -   Test for JSON response
-        
--   `slack_test.go` includes:
-    
-    -   Integration-style test for `handleSlackResponse`, verifying backend call is made and execution completes without errors
-        
+Coverage can be collected with:
 
-These tests ensure core functionality is verified across the backend and Slack interaction boundaries.
-
-For coverage:
-
-```
+```bash
 go test -cover ./...
 ```
 
-----------
+## Notes
 
-## 📬 Slack Marketplace Publication Plan
+- The backend uses Gemini through the `google.golang.org/genai` client.
+- The current OpenTelemetry setup uses the stdout exporter; OTLP export is not wired in.
 
-### Technical & Procedural Steps
-
--   Implement **OAuth 2.0 Add to Slack** flow
-    
--   Create **public redirect endpoint** (via ngrok or deployed service)
-    
--   Secure token storage and environment handling
-    
--   Validate all inputs from Slack
-    
--   Complete **App Manifest** and submit for review
-    
-
-### Additional Requirements
-
--   Privacy Policy & Terms of Use
-    
--   Support channel / contact email
-    
--   Clear branding and command documentation
-    
-
-----------
-
-## 🚀 Future Improvements
-
--   Structured logging with trace context
-    
--   Slack interaction payload support
-    
--   Retry policies for flaky backend responses
-    
--   Metrics exporter (Prometheus, OTLP)
-    
-
-----------
-
-Built with Go, Slack API, Gemini AI API, and OpenTelemetry ❤️
+Built with Go, Slack API, Gemini AI, and OpenTelemetry.
